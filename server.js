@@ -1,84 +1,66 @@
-// backend/server.js
 require('dotenv').config();
-
 const express = require('express');
-const multer  = require('multer');
-const cors    = require('cors');
+const multer = require('multer');
+const cors   = require('cors');
 const { spawn } = require('child_process');
-const path    = require('path');
-const fs      = require('fs');
+const path   = require('path');
+const fs     = require('fs');
 
 const app = express();
-
-// 1) Enable CORS for all origins (adjust origin array if you prefer restricting)
 app.use(cors());
-app.options('*', cors()); // handle pre-flight
 
-// 2) Create uploads directory if it doesn't exist
+// 1) Ensure upload directory exists
 const uploadDir = process.env.UPLOAD_DIR || 'uploads';
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// 3) Multer setup for file uploads
+// 2) Multer config
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename:   (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename:    (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 const upload = multer({ storage });
 
-// 4) Health-check endpoint (optional)
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok' });
-});
-
-// 5) POST /api/upload — combine files, run Python scripts, return download paths
+// 3) POST /api/upload
 app.post('/api/upload', upload.array('files'), (req, res) => {
-  const dataPath     = path.join(uploadDir, 'data.txt');
+  // Combine uploaded files into one data.txt
+  const dataPath = path.join(uploadDir, 'data.txt');
+  const out = fs.createWriteStream(dataPath);
+  req.files.forEach(f => out.write(fs.readFileSync(f.path, 'utf-8') + '\n\n'));
+  out.end();
+
+  const pythonCmd = process.env.PYTHON_PATH || 'python';
   const smartPath    = path.join(uploadDir, 'memories.jsonl');
   const finetunePath = path.join(uploadDir, 'finetune_data.jsonl');
 
-  // Combine uploaded .txt files into one data.txt
-  const outStream = fs.createWriteStream(dataPath);
-  req.files.forEach(file => {
-    const content = fs.readFileSync(file.path, 'utf-8');
-    outStream.write(content + '\n\n');
-  });
-  outStream.end();
-
-  const pythonCmd = process.env.PYTHON_PATH || 'python';
-
-  // 5a) Run generate_jsonl_smart.py
-  let genErrorLog = '';
+  // Run generate_jsonl_smart.py with explicit --output into uploads/
   const gen = spawn(
     pythonCmd,
     ['scripts/generate_jsonl_smart.py', '--input', dataPath, '--output', smartPath],
     { cwd: __dirname }
   );
-  gen.stderr.on('data', chunk => genErrorLog += chunk.toString());
-
+  let genErr = '';
+  gen.stderr.on('data', c => genErr += c.toString());
   gen.on('close', code => {
     if (code !== 0) {
-      console.error('generate_jsonl_smart.py error:', genErrorLog);
-      return res.status(500).send(`Error generating smart JSONL:\n${genErrorLog}`);
+      console.error('[generate_jsonl_smart] stderr:', genErr);
+      return res.status(500).send(`Error generating JSONL smart:\n${genErr}`);
     }
 
-    // 5b) Run prepare_finetune_dataset.py
-    let prepErrorLog = '';
+    // Run prepare_finetune_dataset.py with explicit --input/--output in uploads/
     const prep = spawn(
       pythonCmd,
       ['scripts/prepare_finetune_dataset.py', '--input', smartPath, '--output', finetunePath],
       { cwd: __dirname }
     );
-    prep.stderr.on('data', chunk => prepErrorLog += chunk.toString());
-
+    let prepErr = '';
+    prep.stderr.on('data', c => prepErr += c.toString());
     prep.on('close', code2 => {
       if (code2 !== 0) {
-        console.error('prepare_finetune_dataset.py error:', prepErrorLog);
-        return res.status(500).send(`Error preparing fine-tune JSONL:\n${prepErrorLog}`);
+        console.error('[prepare_finetune_dataset] stderr:', prepErr);
+        return res.status(500).send(`Error preparing fine-tune dataset:\n${prepErr}`);
       }
 
-      // 5c) Success: respond with download endpoints
+      // Success—return relative URIs for download
       res.json({
         smart:    `/api/download/${path.basename(smartPath)}`,
         finetune: `/api/download/${path.basename(finetunePath)}`
@@ -87,17 +69,15 @@ app.post('/api/upload', upload.array('files'), (req, res) => {
   });
 });
 
-// 6) GET /api/download/:filename — serve generated files
+// 4) GET /api/download/:filename
 app.get('/api/download/:filename', (req, res) => {
-  const filePath = path.join(uploadDir, req.params.filename);
-  if (fs.existsSync(filePath)) {
-    return res.download(filePath);
+  const file = path.join(uploadDir, req.params.filename);
+  if (fs.existsSync(file)) {
+    return res.download(file);
   }
   res.status(404).send(`File not found: ${req.params.filename}`);
 });
 
-// 7) Start the server
+// 5) Start server
 const port = process.env.PORT || 4000;
-app.listen(port, () => {
-  console.log(`Backend listening on port ${port}`);
-});
+app.listen(port, () => console.log(`Backend listening on port ${port}`));
