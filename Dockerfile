@@ -1,22 +1,23 @@
-# Stage 1: Use the official Python image to get python3
-FROM python:3.10-slim AS python
-
-# Stage 2: Use Node for your app
+# 1) Base image with Node
 FROM node:18-slim
 
+# 2) Install Python 3 and pip
+RUN apt-get update && \
+    apt-get install -y python3 python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# 3) Copy & install Python deps
 WORKDIR /app
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Copy python3 from the python image
-COPY --from=python /usr/local /usr/local
-COPY --from=python /usr/bin/python3 /usr/bin/python3
-
-# Copy your package files & install
+# 4) Copy & install Node deps
 COPY package*.json ./
 RUN npm install --production
 
-# Copy your backend code
+# 5) Copy the rest of your backend code
 COPY . .
 
-# Expose port and start
+# 6) Expose and run
 EXPOSE 4000
 CMD ["node", "server.js"]
