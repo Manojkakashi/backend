@@ -44,7 +44,7 @@ app.post('/api/upload', upload.array('files'), (req, res) => {
   req.files.forEach(f => out.write(fs.readFileSync(f.path, 'utf-8') + '\n\n'));
   out.end();
 
-  const pythonCmd = process.env.PYTHON_PATH || 'python';
+  const pythonCmd = process.env.PYTHON_PATH || 'python3';
 
   // 5a) generate_jsonl_smart.py
   let genErr = '';
